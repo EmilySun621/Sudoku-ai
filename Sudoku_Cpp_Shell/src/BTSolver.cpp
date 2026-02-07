@@ -91,7 +91,51 @@ bool BTSolver::arcConsistency ( void )
  */
 pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 {
-	return make_pair(unordered_map<Variable*, Domain>(), false);
+	unordered_map<Variable*,Domain> modifiedVariables;
+
+	vector<Constraint*> RMC = network.getModifiedConstraints();
+
+	for (int i = 0; i < RMC.size(); ++i){
+		// list of cells in one constraint
+		// one constraint maybe row/column/box
+		vector<Variable*> LV = RMC[i]->vars;
+
+		for (int j = 0; j < LV.size(); ++j){
+			
+			if (LV[j]->isAssigned){
+				int assignedValue = LV[j]->getAssignment();
+				vector<Variable*> Neighbors = network.getNeighborsOfVariable(LV[j]);
+
+				for (int k = 0; k < Neighbors.size(); ++k){
+					// Only process unassigned neighbors
+					if (!Neighbors[k]->isAssigned){
+						Domain D = Neighbors[k]->getDomain();
+						
+						// If neighbor's domain contains the assigned value,
+						// remove it from its domain. 
+						if (D.contains(assignedValue)){
+
+							// push to trail for future backtracking prupose
+							trail->push(Neighbors[k]);
+							Neighbors[k]->removeValueFromDomain(assignedValue);
+
+							Domain updatedDomain = Neighbors[k]->getDomain();
+							modifiedVariables[Neighrbos[k]] = updatedDomain;
+							
+							//If domain becomes empty, inconsistency found. 
+							if (updatedDomain.size() == 0){
+								return make_pair(modifiedVariables,false);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// checkoverall consistency before make promise
+	bool isConsistent = network.isConsistent();
+
+	return make_pair(modifiedVariables, false);
 }
 
 /**
