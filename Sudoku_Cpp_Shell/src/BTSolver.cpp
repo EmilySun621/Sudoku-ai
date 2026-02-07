@@ -92,17 +92,22 @@ bool BTSolver::arcConsistency ( void )
 pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 {
 	unordered_map<Variable*,Domain> modifiedVariables;
+	// Optimization 1:  no need to check assigned value twice or more.
+	// eg: editing Cell(1,1) will trigger three constraints, we remove all values assigned on Cell(1,1)
+	// out of domain of Cell(1,1)'s neighbor at the first iteration.
+	unordered_set<Variable*> processedAssignments;
 
 	vector<Constraint*> RMC = network.getModifiedConstraints();
 
 	for (int i = 0; i < RMC.size(); ++i){
-		// list of cells in one constraint
-		// one constraint maybe row/column/box
+		//  vector of values in that constraint(row/col/cell). 
 		vector<Variable*> LV = RMC[i]->vars;
 
 		for (int j = 0; j < LV.size(); ++j){
-			
-			if (LV[j]->isAssigned){
+			if (LV[j]->isAssigned() && processedAssignments.find(LV[j]) == processedAssignments.end()){
+				// marked 
+				processedAssignments.insert(LV[j])
+
 				int assignedValue = LV[j]->getAssignment();
 				vector<Variable*> Neighbors = network.getNeighborsOfVariable(LV[j]);
 
