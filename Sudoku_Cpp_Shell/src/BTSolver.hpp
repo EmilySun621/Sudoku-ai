@@ -16,6 +16,10 @@
 
 class BTSolver
 {
+private:
+	unordered_map<Variable*, vector<Variable*>> neighborCache;
+	void buildNeighborCache();
+
 public:
 	// Constructor
 	BTSolver ( SudokuBoard board, Trail* trail, std::string val_sh, std::string var_sh, std::string cc );

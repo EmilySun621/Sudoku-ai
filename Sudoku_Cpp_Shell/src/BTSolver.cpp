@@ -14,6 +14,21 @@ BTSolver::BTSolver ( SudokuBoard input, Trail* _trail,  string val_sh, string va
 	cChecks =  cc;
 
 	trail = _trail;
+	buildNeighborCache();
+}
+
+void BTSolver::buildNeighborCache()
+{
+	unordered_set<Variable*> allVars;
+	for (Constraint& c: network.getConstraints()){
+		for (Variable* v: c.vars){
+			allVars.insert(v);
+		}
+	}
+	// save variable's neighbor to the cache.
+	for (Variable* v : allVars){
+		neighborCache[v] = network.getNeighborsOfVariable(v);
+	}
 }
 
 // =====================================================================
@@ -105,11 +120,12 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 
 		for (int j = 0; j < LV.size(); ++j){
 			if (LV[j]->isAssigned() && processedAssignments.find(LV[j]) == processedAssignments.end()){
-				// marked 
+				// marked value as checked
 				processedAssignments.insert(LV[j])
 
 				int assignedValue = LV[j]->getAssignment();
-				vector<Variable*> Neighbors = network.getNeighborsOfVariable(LV[j]);
+				// search neighbors using cache
+				vector<Variable*> Neighbors = neighborCache[LV[j]];
 
 				for (int k = 0; k < Neighbors.size(); ++k){
 					// Only process unassigned neighbors
@@ -119,6 +135,9 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 						// If neighbor's domain contains the assigned value,
 						// remove it from its domain. 
 						if (D.contains(assignedValue)){
+							// Check if the domain will be empty,early return
+							if (D.size() == 1)
+								return make_pair(modifiedVariables,false)
 
 							// push to trail for future backtracking prupose
 							trail->push(Neighbors[k]);
@@ -137,10 +156,7 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 			}
 		}
 	}
-	// checkoverall consistency before make promise
-	bool isConsistent = network.isConsistent();
-
-	return make_pair(modifiedVariables, false);
+	return make_pair(modifiedVariables, network.isConsistent());
 }
 
 /**
