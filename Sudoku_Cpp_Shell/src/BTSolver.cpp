@@ -107,10 +107,15 @@ bool BTSolver::arcConsistency ( void )
 pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 {
 	unordered_map<Variable*,Domain> modifiedVariables;
-	// Optimization 1:  no need to check assigned value twice or more.
+	// Optimization :  no need to check assigned value twice or more.
 	// eg: editing Cell(1,1) will trigger three constraints, we remove all values assigned on Cell(1,1)
 	// out of domain of Cell(1,1)'s neighbor at the first iteration.
 	unordered_set<Variable*> processedAssignments;
+	// Optimization: incremental propagation with queue
+	// Process variables that need propagation( initially from modified constraints)
+	// then automatically added when singleton is detected, we assign value to these singleton
+	queue<Variable*> propagationQueue;
+	unordered_set<Variable*> inQueue;
 
 	vector<Constraint*> RMC = network.getModifiedConstraints();
 
@@ -123,40 +128,67 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 				// marked value as checked
 				processedAssignments.insert(LV[j])
 
-				int assignedValue = LV[j]->getAssignment();
-				// search neighbors using cache
-				vector<Variable*> Neighbors = neighborCache[LV[j]];
+				if (inQueue.find(LV[j]) == inQueue.end()){
+					propagationQueue.push(LV[j]);
+					inQueue.insert(LV[j]);
+				}
+			}
+		}
+	}
+	while (!propagationQueue.empty()){
+			Variable* assignedVar = propagationQueue.front();
+			propagationQueue.pop();
+			inQueue.erase(assignedVar);
 
-				for (int k = 0; k < Neighbors.size(); ++k){
-					// Only process unassigned neighbors
-					if (!Neighbors[k]->isAssigned){
-						Domain D = Neighbors[k]->getDomain();
+			if (!assignedVar->isAssigned()) continue;
+
+			int assignedValue = assignedVar->getAssignment();
+			// search neighbors using cache
+			vector<Variable*>& Neighbors = neighborCache[assignedVar];
+
+			for (int k = 0; k < Neighbors.size(); ++k){
+				// Only process unassigned neighbors
+				if (!Neighbors[k]->isAssigned()){
+					Domain D = Neighbors[k]->getDomain();
 						
-						// If neighbor's domain contains the assigned value,
-						// remove it from its domain. 
-						if (D.contains(assignedValue)){
-							// Check if the domain will be empty,early return
-							if (D.size() == 1)
-								return make_pair(modifiedVariables,false)
+					// If neighbor's domain contains the assigned value,
+					// remove it from its domain. 
+					if (D.contains(assignedValue)){
+						// Optimization: Check if the domain will be empty,early return
+						if (D.size() == 1)
+							return make_pair(modifiedVariables,false);
 
-							// push to trail for future backtracking prupose
-							trail->push(Neighbors[k]);
-							Neighbors[k]->removeValueFromDomain(assignedValue);
+						// push to trail for future backtracking prupose
+						trail->push(Neighbors[k]);
+						Neighbors[k]->removeValueFromDomain(assignedValue);
 
-							Domain updatedDomain = Neighbors[k]->getDomain();
-							modifiedVariables[Neighrbos[k]] = updatedDomain;
+						Domain updatedDomain = Neighbors[k]->getDomain();
+						modifiedVariables[Neighbors[k]] = updatedDomain;
 							
-							//If domain becomes empty, inconsistency found. 
-							if (updatedDomain.size() == 0){
-								return make_pair(modifiedVariables,false);
+						// Optimization: Singleton propagation
+					    // If domain becomes singleton, automatically assign it and continue propagation
+						if (updatedDomain.size() == 1){
+							int onlyValue = updatedDomain.getValues()[0];
+
+							// Assign the only remaining value
+							trail->push(Neighbors[k]);
+							Neighbors[k]->assignValue(onlyValue);
+
+							// Add to propagation queue
+							if (inQueue.find(Neighbors[k]) == inQueue.end()){
+								propagationQueue.push(Neighbors[k]);
+								inQueue.insert(Neighbors[k]);
 							}
+						}
+						// Double check to safty reason
+						else if (updatedDomain.size() == 0){
+							return make_pair(modifiedVariables,false);
 						}
 					}
 				}
 			}
 		}
-	}
-	return make_pair(modifiedVariables, network.isConsistent());
+	return make_pair(modifiedVariables,true);
 }
 
 /**
