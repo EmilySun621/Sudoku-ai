@@ -1,5 +1,8 @@
 #include"BTSolver.hpp"
-
+#include <algorithm>     
+#include <unordered_map> 
+#include <unordered_set> 
+#include <queue>         
 using namespace std;
 
 // =====================================================================
@@ -126,7 +129,7 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 		for (int j = 0; j < LV.size(); ++j){
 			if (LV[j]->isAssigned() && processedAssignments.find(LV[j]) == processedAssignments.end()){
 				// marked value as checked
-				processedAssignments.insert(LV[j])
+				processedAssignments.insert(LV[j]);
 
 				if (inQueue.find(LV[j]) == inQueue.end()){
 					propagationQueue.push(LV[j]);
@@ -164,25 +167,36 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 
 						Domain updatedDomain = Neighbors[k]->getDomain();
 						modifiedVariables[Neighbors[k]] = updatedDomain;
-							
-						// Optimization: Singleton propagation
-					    // If domain becomes singleton, automatically assign it and continue propagation
-						if (updatedDomain.size() == 1){
+						
+						if (updatedDomain.size() == 0){
+							return make_pair(modifiedVariables,false);
+						}
+						if (updatedDomain.size() == 1 && 
+					    	!Neighbors[k]->isAssigned() && 
+					    	Neighbors[k]->getDomain().size() == 1) { 
+						
 							int onlyValue = updatedDomain.getValues()[0];
+						
+							bool canAssign = true;
+							vector<Variable*>& neighborsOfNeighbor = neighborCache[Neighbors[k]];
+							for (Variable* nn : neighborsOfNeighbor) {
+								if (nn->isAssigned() && nn->getAssignment() == onlyValue) {
+									canAssign = false;
+									break;
+								}
+							}
+						
+							if (!canAssign) {
+								return make_pair(modifiedVariables, false);
+							}
 
-							// Assign the only remaining value
 							trail->push(Neighbors[k]);
 							Neighbors[k]->assignValue(onlyValue);
 
-							// Add to propagation queue
 							if (inQueue.find(Neighbors[k]) == inQueue.end()){
 								propagationQueue.push(Neighbors[k]);
 								inQueue.insert(Neighbors[k]);
 							}
-						}
-						// Double check to safty reason
-						else if (updatedDomain.size() == 0){
-							return make_pair(modifiedVariables,false);
 						}
 					}
 				}
