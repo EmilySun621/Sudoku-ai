@@ -2,7 +2,8 @@
 #include <algorithm>     
 #include <unordered_map> 
 #include <unordered_set> 
-#include <queue>         
+#include <queue> 
+#include <climits>        
 using namespace std;
 
 // =====================================================================
@@ -260,8 +261,27 @@ Variable* BTSolver::getfirstUnassignedVariable ( void )
  */
 Variable* BTSolver::getMRV ( void )
 {
-    return nullptr;
+    Variable* best = nullptr;
+    int smallestDomainSize = INT_MAX;
+
+    for (Variable* v : network.getVariables())
+    {
+        if (!v->isAssigned())
+        {
+            int domainSize = v->getDomain().size();
+
+            if (domainSize < smallestDomainSize)
+            {
+                smallestDomainSize = domainSize;
+                best = v;
+            }
+        }
+    }
+
+    return best;
 }
+
+
 
 /**
  * Part 2 TODO: Implement the Minimum Remaining Value Heuristic
