@@ -153,7 +153,7 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
 			for (int k = 0; k < Neighbors.size(); ++k){
 				// Only process unassigned neighbors
 				if (!Neighbors[k]->isAssigned()){
-					Domain D = Neighbors[k]->getDomain();
+					const Domain& D = Neighbors[k]->getDomain();
 						
 					// If neighbor's domain contains the assigned value,
 					// remove it from its domain. 
@@ -296,7 +296,7 @@ vector<Variable*> BTSolver::MRVwithTieBreaker ( void )
 {
 	vector<Variable*> result;
 	int smallestDomainSize = INT_MAX;
-	int mostConstraints = -1
+	int mostConstraints = -1;
 
 	for (Variable* v: network.getVariables())
 	{
