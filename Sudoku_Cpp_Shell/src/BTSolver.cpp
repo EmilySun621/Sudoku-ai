@@ -364,7 +364,20 @@ vector<int> BTSolver::getValuesInOrder ( Variable* v )
  */
 vector<int> BTSolver::getValuesLCVOrder ( Variable* v )
 {
-    return vector<int>();
+    vector<int> values = v->getDomain().getValues();
+    vector<Variable*>& neighbors = neighborCache[v];
+
+    unordered_map<int, int> elimCount;
+    for (int val : values)
+        for (Variable* neighbor : neighbors)
+            if (!neighbor->isAssigned() && neighbor->getDomain().contains(val))
+                elimCount[val]++;
+
+    sort(values.begin(), values.end(), [&](int a, int b) {
+        return elimCount[a] < elimCount[b];
+    });
+
+    return values;
 }
 
 /**
