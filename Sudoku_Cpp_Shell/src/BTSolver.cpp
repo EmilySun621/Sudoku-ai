@@ -533,7 +533,10 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
  */
 bool BTSolver::getTournCC ( void )
 {
-	// --- Step 1: Forward Checking with cascade ---
+	    // Determine board size from p*q
+    int boardSize = sudokuGrid.get_p() * sudokuGrid.get_q();
+ 
+    // --- Step 1: Forward Checking with cascade (always do this) ---
     queue<Variable*> propagationQueue;
     unordered_set<Variable*> inQueue;
     unordered_set<Variable*> processed;
@@ -606,8 +609,7 @@ bool BTSolver::getTournCC ( void )
         }
     }
  
-    // --- Step 2: Hidden Singles + Naked Pairs + Naked Triples + Hidden Pairs ---
-    // Loop until fixpoint (no more changes)
+    // --- Step 2: Hidden Singles + Naked Pairs (+ advanced for large boards) ---
     bool changed = true;
     while (changed)
     {
@@ -616,7 +618,7 @@ bool BTSolver::getTournCC ( void )
  
         for (Constraint& c : allConstraints)
         {
-            // Collect unassigned variables and assigned values in this constraint
+            // Collect unassigned vars and assigned values
             vector<Variable*> unassigned;
             unordered_set<int> assignedVals;
             for (Variable* v : c.vars)
@@ -627,7 +629,6 @@ bool BTSolver::getTournCC ( void )
                     unassigned.push_back(v);
             }
  
-            // Skip fully assigned constraints
             if (unassigned.empty()) continue;
  
             // ============================================
@@ -668,7 +669,6 @@ bool BTSolver::getTournCC ( void )
                         target->assignValue(val);
                         changed = true;
  
-                        // Propagate removal
                         for (Variable* neighbor : neighborCache[target])
                         {
                             if (!neighbor->isAssigned())
@@ -703,98 +703,7 @@ bool BTSolver::getTournCC ( void )
             }
  
             // ============================================
-            // 2b: Hidden Pairs
-            // For each pair of values that can only go in 
-            // exactly 2 cells, those cells can ONLY contain 
-            // those 2 values. Remove everything else.
-            // ============================================
-            // Rebuild valueToCandidates for current state (things may have changed)
-            unordered_map<int, vector<Variable*>> vtc2;
-            for (Variable* v : c.vars)
-            {
-                if (!v->isAssigned())
-                {
-                    vector<int> vals = v->getDomain().getValues();
-                    for (int val : vals)
-                        vtc2[val].push_back(v);
-                }
-            }
- 
-            // Collect values that appear in exactly 2 cells
-            vector<int> twoPlaceValues;
-            for (auto& entry : vtc2)
-            {
-                if (entry.second.size() == 2)
-                    twoPlaceValues.push_back(entry.first);
-            }
- 
-            for (int i = 0; i < (int)twoPlaceValues.size(); i++)
-            {
-                for (int j = i + 1; j < (int)twoPlaceValues.size(); j++)
-                {
-                    int v1 = twoPlaceValues[i];
-                    int v2 = twoPlaceValues[j];
- 
-                    vector<Variable*>& cells1 = vtc2[v1];
-                    vector<Variable*>& cells2 = vtc2[v2];
- 
-                    // Check if both values appear in the same 2 cells
-                    if (cells1.size() == 2 && cells2.size() == 2 &&
-                        ((cells1[0] == cells2[0] && cells1[1] == cells2[1]) ||
-                         (cells1[0] == cells2[1] && cells1[1] == cells2[0])))
-                    {
-                        // These 2 cells can ONLY contain v1 and v2
-                        // Remove all other values from these 2 cells
-                        Variable* cellA = cells1[0];
-                        Variable* cellB = cells1[1];
- 
-                        for (Variable* cell : {cellA, cellB})
-                        {
-                            if (cell->isAssigned()) continue;
- 
-                            vector<int> domVals = cell->getDomain().getValues();
-                            bool pushed = false;
- 
-                            for (int dv : domVals)
-                            {
-                                if (dv != v1 && dv != v2)
-                                {
-                                    if (!pushed)
-                                    {
-                                        trail->push(cell);
-                                        pushed = true;
-                                    }
-                                    cell->removeValueFromDomain(dv);
-                                    changed = true;
-                                }
-                            }
- 
-                            if (cell->getDomain().size() == 0)
-                                return false;
- 
-                            if (cell->getDomain().size() == 1 && !cell->isAssigned())
-                            {
-                                int ov = cell->getDomain().getValues()[0];
-                                bool ok = true;
-                                for (Variable* nn : neighborCache[cell])
-                                {
-                                    if (nn->isAssigned() && nn->getAssignment() == ov)
-                                    { ok = false; break; }
-                                }
-                                if (!ok) return false;
-                                trail->push(cell);
-                                cell->assignValue(ov);
-                                changed = true;
-                            }
-                        }
-                    }
-                }
-            }
- 
-            // ============================================
-            // 2c: Naked Pairs
-            // Two cells with identical 2-value domain ->
-            // remove those values from all other cells
+            // 2b: Naked Pairs (always do this — cheap and effective)
             // ============================================
             vector<Variable*> pairCandidates;
             for (Variable* v : c.vars)
@@ -860,88 +769,168 @@ bool BTSolver::getTournCC ( void )
             }
  
             // ============================================
-            // 2d: Naked Triples
-            // Three cells whose combined domain is exactly 
-            // 3 values -> remove those values from all 
-            // other cells in constraint
+            // 2c: Hidden Pairs + Naked Triples 
+            //     ONLY for large boards (16x16, 25x25)
+            //     On 9x9 the overhead isn't worth it
             // ============================================
-            vector<Variable*> triCandidates;
-            for (Variable* v : c.vars)
+            if (boardSize > 9)
             {
-                if (!v->isAssigned())
+                // --- Hidden Pairs ---
+                unordered_map<int, vector<Variable*>> vtc2;
+                for (Variable* v : c.vars)
                 {
-                    int ds = v->getDomain().size();
-                    if (ds == 2 || ds == 3)
-                        triCandidates.push_back(v);
-                }
-            }
- 
-            for (int i = 0; i < (int)triCandidates.size(); i++)
-            {
-                for (int j = i + 1; j < (int)triCandidates.size(); j++)
-                {
-                    for (int k = j + 1; k < (int)triCandidates.size(); k++)
+                    if (!v->isAssigned())
                     {
-                        // Union the domains of all three
-                        unordered_set<int> unionDomain;
-                        for (int val : triCandidates[i]->getDomain().getValues())
-                            unionDomain.insert(val);
-                        for (int val : triCandidates[j]->getDomain().getValues())
-                            unionDomain.insert(val);
-                        for (int val : triCandidates[k]->getDomain().getValues())
-                            unionDomain.insert(val);
+                        vector<int> vals = v->getDomain().getValues();
+                        for (int val : vals)
+                            vtc2[val].push_back(v);
+                    }
+                }
  
-                        // If union has exactly 3 values, we found a naked triple
-                        if (unionDomain.size() == 3)
+                vector<int> twoPlaceValues;
+                for (auto& entry : vtc2)
+                {
+                    if (entry.second.size() == 2)
+                        twoPlaceValues.push_back(entry.first);
+                }
+ 
+                for (int i = 0; i < (int)twoPlaceValues.size(); i++)
+                {
+                    for (int j = i + 1; j < (int)twoPlaceValues.size(); j++)
+                    {
+                        int v1 = twoPlaceValues[i];
+                        int v2 = twoPlaceValues[j];
+ 
+                        vector<Variable*>& cells1 = vtc2[v1];
+                        vector<Variable*>& cells2 = vtc2[v2];
+ 
+                        if (cells1.size() == 2 && cells2.size() == 2 &&
+                            ((cells1[0] == cells2[0] && cells1[1] == cells2[1]) ||
+                             (cells1[0] == cells2[1] && cells1[1] == cells2[0])))
                         {
-                            // Remove these 3 values from all OTHER cells
-                            for (Variable* v : c.vars)
-                            {
-                                if (v == triCandidates[i] || v == triCandidates[j] || v == triCandidates[k])
-                                    continue;
-                                if (v->isAssigned()) continue;
+                            Variable* cellA = cells1[0];
+                            Variable* cellB = cells1[1];
  
-                                Domain D = v->getDomain();
+                            for (Variable* cell : {cellA, cellB})
+                            {
+                                if (cell->isAssigned()) continue;
+ 
+                                vector<int> domVals = cell->getDomain().getValues();
                                 bool pushed = false;
  
-                                for (int uv : unionDomain)
+                                for (int dv : domVals)
                                 {
-                                    if (D.contains(uv))
+                                    if (dv != v1 && dv != v2)
                                     {
                                         if (!pushed)
                                         {
-                                            trail->push(v);
+                                            trail->push(cell);
                                             pushed = true;
                                         }
-                                        v->removeValueFromDomain(uv);
+                                        cell->removeValueFromDomain(dv);
                                         changed = true;
                                     }
                                 }
  
-                                if (v->getDomain().size() == 0) return false;
+                                if (cell->getDomain().size() == 0)
+                                    return false;
  
-                                if (v->getDomain().size() == 1 && !v->isAssigned())
+                                if (cell->getDomain().size() == 1 && !cell->isAssigned())
                                 {
-                                    int ov = v->getDomain().getValues()[0];
+                                    int ov = cell->getDomain().getValues()[0];
                                     bool ok = true;
-                                    for (Variable* nn : neighborCache[v])
+                                    for (Variable* nn : neighborCache[cell])
                                     {
                                         if (nn->isAssigned() && nn->getAssignment() == ov)
                                         { ok = false; break; }
                                     }
                                     if (!ok) return false;
-                                    trail->push(v);
-                                    v->assignValue(ov);
+                                    trail->push(cell);
+                                    cell->assignValue(ov);
                                     changed = true;
                                 }
                             }
                         }
                     }
                 }
-            }
+ 
+                // --- Naked Triples ---
+                vector<Variable*> triCandidates;
+                for (Variable* v : c.vars)
+                {
+                    if (!v->isAssigned())
+                    {
+                        int ds = v->getDomain().size();
+                        if (ds == 2 || ds == 3)
+                            triCandidates.push_back(v);
+                    }
+                }
+ 
+                for (int i = 0; i < (int)triCandidates.size(); i++)
+                {
+                    for (int j = i + 1; j < (int)triCandidates.size(); j++)
+                    {
+                        for (int k = j + 1; k < (int)triCandidates.size(); k++)
+                        {
+                            unordered_set<int> unionDomain;
+                            for (int val : triCandidates[i]->getDomain().getValues())
+                                unionDomain.insert(val);
+                            for (int val : triCandidates[j]->getDomain().getValues())
+                                unionDomain.insert(val);
+                            for (int val : triCandidates[k]->getDomain().getValues())
+                                unionDomain.insert(val);
+ 
+                            if (unionDomain.size() == 3)
+                            {
+                                for (Variable* v : c.vars)
+                                {
+                                    if (v == triCandidates[i] || v == triCandidates[j] || v == triCandidates[k])
+                                        continue;
+                                    if (v->isAssigned()) continue;
+ 
+                                    Domain D = v->getDomain();
+                                    bool pushed = false;
+ 
+                                    for (int uv : unionDomain)
+                                    {
+                                        if (D.contains(uv))
+                                        {
+                                            if (!pushed)
+                                            {
+                                                trail->push(v);
+                                                pushed = true;
+                                            }
+                                            v->removeValueFromDomain(uv);
+                                            changed = true;
+                                        }
+                                    }
+ 
+                                    if (v->getDomain().size() == 0) return false;
+ 
+                                    if (v->getDomain().size() == 1 && !v->isAssigned())
+                                    {
+                                        int ov = v->getDomain().getValues()[0];
+                                        bool ok = true;
+                                        for (Variable* nn : neighborCache[v])
+                                        {
+                                            if (nn->isAssigned() && nn->getAssignment() == ov)
+                                            { ok = false; break; }
+                                        }
+                                        if (!ok) return false;
+                                        trail->push(v);
+                                        v->assignValue(ov);
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } // end if boardSize > 9
  
         } // end for each constraint
     } // end while changed
+ 
     return network.isConsistent();
 }
 
