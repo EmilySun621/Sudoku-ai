@@ -225,7 +225,286 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
  */
 pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
 {
-    return make_pair(unordered_map<Variable*, int>(), false);
+        unordered_map<Variable*, int> assignedVariables;
+ 
+    // ---- Part 1: Forward Checking (eliminate assigned values from neighbors) ----
+    queue<Variable*> propagationQueue;
+    unordered_set<Variable*> inQueue;
+    unordered_set<Variable*> processed;
+ 
+    vector<Constraint*> RMC = network.getModifiedConstraints();
+    for (Constraint* c : RMC)
+    {
+        for (Variable* v : c->vars)
+        {
+            if (v->isAssigned() && processed.find(v) == processed.end())
+            {
+                processed.insert(v);
+                if (inQueue.find(v) == inQueue.end())
+                {
+                    propagationQueue.push(v);
+                    inQueue.insert(v);
+                }
+            }
+        }
+    }
+ 
+    while (!propagationQueue.empty())
+    {
+        Variable* assignedVar = propagationQueue.front();
+        propagationQueue.pop();
+        inQueue.erase(assignedVar);
+ 
+        if (!assignedVar->isAssigned()) continue;
+ 
+        int assignedValue = assignedVar->getAssignment();
+        vector<Variable*>& neighbors = neighborCache[assignedVar];
+ 
+        for (Variable* neighbor : neighbors)
+        {
+            if (!neighbor->isAssigned())
+            {
+                Domain D = neighbor->getDomain();
+                if (D.contains(assignedValue))
+                {
+                    if (D.size() == 1)
+                        return make_pair(assignedVariables, false);
+ 
+                    trail->push(neighbor);
+                    neighbor->removeValueFromDomain(assignedValue);
+ 
+                    if (neighbor->getDomain().size() == 0)
+                        return make_pair(assignedVariables, false);
+ 
+                    // Naked single: domain reduced to 1, assign it
+                    if (neighbor->getDomain().size() == 1)
+                    {
+                        int onlyValue = neighbor->getDomain().getValues()[0];
+ 
+                        bool canAssign = true;
+                        vector<Variable*>& neighborsOfNeighbor = neighborCache[neighbor];
+                        for (Variable* nn : neighborsOfNeighbor)
+                        {
+                            if (nn->isAssigned() && nn->getAssignment() == onlyValue)
+                            {
+                                canAssign = false;
+                                break;
+                            }
+                        }
+ 
+                        if (!canAssign)
+                            return make_pair(assignedVariables, false);
+ 
+                        trail->push(neighbor);
+                        neighbor->assignValue(onlyValue);
+                        assignedVariables[neighbor] = onlyValue;
+ 
+                        if (inQueue.find(neighbor) == inQueue.end())
+                        {
+                            propagationQueue.push(neighbor);
+                            inQueue.insert(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+    }
+ 
+    // ---- Part 2: Hidden Singles + Naked Pairs (loop until fixpoint) ----
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        vector<Constraint> allConstraints = network.getConstraints();
+ 
+        for (Constraint& c : allConstraints)
+        {
+            // ============================================
+            // 2a: Hidden Singles
+            // ============================================
+            unordered_map<int, vector<Variable*>> valueToCandidates;
+            unordered_set<int> assignedVals;
+ 
+            for (Variable* v : c.vars)
+            {
+                if (v->isAssigned())
+                    assignedVals.insert(v->getAssignment());
+                else
+                {
+                    vector<int> vals = v->getDomain().getValues();
+                    for (int val : vals)
+                        valueToCandidates[val].push_back(v);
+                }
+            }
+ 
+            for (auto& entry : valueToCandidates)
+            {
+                int val = entry.first;
+                vector<Variable*>& candidates = entry.second;
+ 
+                if (assignedVals.count(val))
+                    continue;
+ 
+                // No candidate can hold this value -> inconsistency
+                if (candidates.size() == 0)
+                    return make_pair(assignedVariables, false);
+ 
+                // Hidden single: only one place for this value
+                if (candidates.size() == 1)
+                {
+                    Variable* target = candidates[0];
+                    if (!target->isAssigned())
+                    {
+                        // Verify no conflict with neighbors
+                        bool canAssign = true;
+                        vector<Variable*>& neighborsOfTarget = neighborCache[target];
+                        for (Variable* nn : neighborsOfTarget)
+                        {
+                            if (nn->isAssigned() && nn->getAssignment() == val)
+                            {
+                                canAssign = false;
+                                break;
+                            }
+                        }
+ 
+                        if (!canAssign)
+                            return make_pair(assignedVariables, false);
+ 
+                        trail->push(target);
+                        target->assignValue(val);
+                        assignedVariables[target] = val;
+                        changed = true;
+ 
+                        // Propagate: remove val from all neighbors' domains
+                        vector<Variable*>& neighbors = neighborCache[target];
+                        for (Variable* neighbor : neighbors)
+                        {
+                            if (!neighbor->isAssigned())
+                            {
+                                Domain D = neighbor->getDomain();
+                                if (D.contains(val))
+                                {
+                                    if (D.size() == 1)
+                                        return make_pair(assignedVariables, false);
+ 
+                                    trail->push(neighbor);
+                                    neighbor->removeValueFromDomain(val);
+ 
+                                    if (neighbor->getDomain().size() == 0)
+                                        return make_pair(assignedVariables, false);
+ 
+                                    if (neighbor->getDomain().size() == 1)
+                                    {
+                                        int onlyVal = neighbor->getDomain().getValues()[0];
+                                        bool ok = true;
+                                        for (Variable* nn2 : neighborCache[neighbor])
+                                        {
+                                            if (nn2->isAssigned() && nn2->getAssignment() == onlyVal)
+                                            {
+                                                ok = false;
+                                                break;
+                                            }
+                                        }
+                                        if (!ok)
+                                            return make_pair(assignedVariables, false);
+ 
+                                        trail->push(neighbor);
+                                        neighbor->assignValue(onlyVal);
+                                        assignedVariables[neighbor] = onlyVal;
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+ 
+            // ============================================
+            // 2b: Naked Pairs
+            // ============================================
+            // Find all unassigned variables in this constraint with domain size 2
+            vector<Variable*> pairCandidates;
+            for (Variable* v : c.vars)
+            {
+                if (!v->isAssigned() && v->getDomain().size() == 2)
+                    pairCandidates.push_back(v);
+            }
+ 
+            // Check each pair of candidates for matching domains
+            for (int i = 0; i < (int)pairCandidates.size(); i++)
+            {
+                for (int j = i + 1; j < (int)pairCandidates.size(); j++)
+                {
+                    vector<int> d1 = pairCandidates[i]->getDomain().getValues();
+                    vector<int> d2 = pairCandidates[j]->getDomain().getValues();
+ 
+                    // Check if domains are identical (both size 2 with same values)
+                    if (d1.size() == 2 && d2.size() == 2 &&
+                        ((d1[0] == d2[0] && d1[1] == d2[1]) ||
+                         (d1[0] == d2[1] && d1[1] == d2[0])))
+                    {
+                        int val1 = d1[0];
+                        int val2 = d1[1];
+ 
+                        // Remove val1 and val2 from all OTHER unassigned vars in this constraint
+                        for (Variable* v : c.vars)
+                        {
+                            if (v == pairCandidates[i] || v == pairCandidates[j])
+                                continue;
+                            if (v->isAssigned())
+                                continue;
+ 
+                            Domain D = v->getDomain();
+                            bool pushed = false;
+ 
+                            if (D.contains(val1))
+                            {
+                                trail->push(v);
+                                pushed = true;
+                                v->removeValueFromDomain(val1);
+                                changed = true;
+                            }
+                            if (D.contains(val2))
+                            {
+                                if (!pushed)
+                                    trail->push(v);
+                                v->removeValueFromDomain(val2);
+                                changed = true;
+                            }
+ 
+                            // Check for empty domain
+                            if (v->getDomain().size() == 0)
+                                return make_pair(assignedVariables, false);
+ 
+                            // If domain reduced to 1, assign it
+                            if (v->getDomain().size() == 1 && !v->isAssigned())
+                            {
+                                int onlyVal = v->getDomain().getValues()[0];
+                                bool ok = true;
+                                for (Variable* nn : neighborCache[v])
+                                {
+                                    if (nn->isAssigned() && nn->getAssignment() == onlyVal)
+                                    {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                                if (!ok)
+                                    return make_pair(assignedVariables, false);
+ 
+                                trail->push(v);
+                                v->assignValue(onlyVal);
+                                assignedVariables[v] = onlyVal;
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return make_pair(assignedVariables, network.isConsistent());
 }
 
 /**
