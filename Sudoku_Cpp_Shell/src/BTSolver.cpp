@@ -533,7 +533,416 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
  */
 bool BTSolver::getTournCC ( void )
 {
-	return false;
+	// --- Step 1: Forward Checking with cascade ---
+    queue<Variable*> propagationQueue;
+    unordered_set<Variable*> inQueue;
+    unordered_set<Variable*> processed;
+ 
+    vector<Constraint*> RMC = network.getModifiedConstraints();
+    for (Constraint* c : RMC)
+    {
+        for (Variable* v : c->vars)
+        {
+            if (v->isAssigned() && processed.find(v) == processed.end())
+            {
+                processed.insert(v);
+                if (inQueue.find(v) == inQueue.end())
+                {
+                    propagationQueue.push(v);
+                    inQueue.insert(v);
+                }
+            }
+        }
+    }
+ 
+    while (!propagationQueue.empty())
+    {
+        Variable* assignedVar = propagationQueue.front();
+        propagationQueue.pop();
+        inQueue.erase(assignedVar);
+ 
+        if (!assignedVar->isAssigned()) continue;
+ 
+        int assignedValue = assignedVar->getAssignment();
+        vector<Variable*>& neighbors = neighborCache[assignedVar];
+ 
+        for (Variable* neighbor : neighbors)
+        {
+            if (!neighbor->isAssigned())
+            {
+                Domain D = neighbor->getDomain();
+                if (D.contains(assignedValue))
+                {
+                    if (D.size() == 1)
+                        return false;
+ 
+                    trail->push(neighbor);
+                    neighbor->removeValueFromDomain(assignedValue);
+ 
+                    if (neighbor->getDomain().size() == 0)
+                        return false;
+ 
+                    if (neighbor->getDomain().size() == 1)
+                    {
+                        int onlyValue = neighbor->getDomain().getValues()[0];
+                        bool canAssign = true;
+                        for (Variable* nn : neighborCache[neighbor])
+                        {
+                            if (nn->isAssigned() && nn->getAssignment() == onlyValue)
+                            { canAssign = false; break; }
+                        }
+                        if (!canAssign) return false;
+ 
+                        trail->push(neighbor);
+                        neighbor->assignValue(onlyValue);
+                        if (inQueue.find(neighbor) == inQueue.end())
+                        {
+                            propagationQueue.push(neighbor);
+                            inQueue.insert(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+    }
+ 
+    // --- Step 2: Hidden Singles + Naked Pairs + Naked Triples + Hidden Pairs ---
+    // Loop until fixpoint (no more changes)
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        vector<Constraint> allConstraints = network.getConstraints();
+ 
+        for (Constraint& c : allConstraints)
+        {
+            // Collect unassigned variables and assigned values in this constraint
+            vector<Variable*> unassigned;
+            unordered_set<int> assignedVals;
+            for (Variable* v : c.vars)
+            {
+                if (v->isAssigned())
+                    assignedVals.insert(v->getAssignment());
+                else
+                    unassigned.push_back(v);
+            }
+ 
+            // Skip fully assigned constraints
+            if (unassigned.empty()) continue;
+ 
+            // ============================================
+            // 2a: Hidden Singles
+            // ============================================
+            unordered_map<int, vector<Variable*>> valueToCandidates;
+            for (Variable* v : unassigned)
+            {
+                vector<int> vals = v->getDomain().getValues();
+                for (int val : vals)
+                    valueToCandidates[val].push_back(v);
+            }
+ 
+            for (auto& entry : valueToCandidates)
+            {
+                int val = entry.first;
+                vector<Variable*>& candidates = entry.second;
+ 
+                if (assignedVals.count(val)) continue;
+ 
+                if (candidates.size() == 0)
+                    return false;
+ 
+                if (candidates.size() == 1)
+                {
+                    Variable* target = candidates[0];
+                    if (!target->isAssigned())
+                    {
+                        bool canAssign = true;
+                        for (Variable* nn : neighborCache[target])
+                        {
+                            if (nn->isAssigned() && nn->getAssignment() == val)
+                            { canAssign = false; break; }
+                        }
+                        if (!canAssign) return false;
+ 
+                        trail->push(target);
+                        target->assignValue(val);
+                        changed = true;
+ 
+                        // Propagate removal
+                        for (Variable* neighbor : neighborCache[target])
+                        {
+                            if (!neighbor->isAssigned())
+                            {
+                                Domain D = neighbor->getDomain();
+                                if (D.contains(val))
+                                {
+                                    if (D.size() == 1) return false;
+                                    trail->push(neighbor);
+                                    neighbor->removeValueFromDomain(val);
+                                    if (neighbor->getDomain().size() == 0) return false;
+ 
+                                    if (neighbor->getDomain().size() == 1)
+                                    {
+                                        int ov = neighbor->getDomain().getValues()[0];
+                                        bool ok = true;
+                                        for (Variable* nn2 : neighborCache[neighbor])
+                                        {
+                                            if (nn2->isAssigned() && nn2->getAssignment() == ov)
+                                            { ok = false; break; }
+                                        }
+                                        if (!ok) return false;
+                                        trail->push(neighbor);
+                                        neighbor->assignValue(ov);
+                                        changed = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+ 
+            // ============================================
+            // 2b: Hidden Pairs
+            // For each pair of values that can only go in 
+            // exactly 2 cells, those cells can ONLY contain 
+            // those 2 values. Remove everything else.
+            // ============================================
+            // Rebuild valueToCandidates for current state (things may have changed)
+            unordered_map<int, vector<Variable*>> vtc2;
+            for (Variable* v : c.vars)
+            {
+                if (!v->isAssigned())
+                {
+                    vector<int> vals = v->getDomain().getValues();
+                    for (int val : vals)
+                        vtc2[val].push_back(v);
+                }
+            }
+ 
+            // Collect values that appear in exactly 2 cells
+            vector<int> twoPlaceValues;
+            for (auto& entry : vtc2)
+            {
+                if (entry.second.size() == 2)
+                    twoPlaceValues.push_back(entry.first);
+            }
+ 
+            for (int i = 0; i < (int)twoPlaceValues.size(); i++)
+            {
+                for (int j = i + 1; j < (int)twoPlaceValues.size(); j++)
+                {
+                    int v1 = twoPlaceValues[i];
+                    int v2 = twoPlaceValues[j];
+ 
+                    vector<Variable*>& cells1 = vtc2[v1];
+                    vector<Variable*>& cells2 = vtc2[v2];
+ 
+                    // Check if both values appear in the same 2 cells
+                    if (cells1.size() == 2 && cells2.size() == 2 &&
+                        ((cells1[0] == cells2[0] && cells1[1] == cells2[1]) ||
+                         (cells1[0] == cells2[1] && cells1[1] == cells2[0])))
+                    {
+                        // These 2 cells can ONLY contain v1 and v2
+                        // Remove all other values from these 2 cells
+                        Variable* cellA = cells1[0];
+                        Variable* cellB = cells1[1];
+ 
+                        for (Variable* cell : {cellA, cellB})
+                        {
+                            if (cell->isAssigned()) continue;
+ 
+                            vector<int> domVals = cell->getDomain().getValues();
+                            bool pushed = false;
+ 
+                            for (int dv : domVals)
+                            {
+                                if (dv != v1 && dv != v2)
+                                {
+                                    if (!pushed)
+                                    {
+                                        trail->push(cell);
+                                        pushed = true;
+                                    }
+                                    cell->removeValueFromDomain(dv);
+                                    changed = true;
+                                }
+                            }
+ 
+                            if (cell->getDomain().size() == 0)
+                                return false;
+ 
+                            if (cell->getDomain().size() == 1 && !cell->isAssigned())
+                            {
+                                int ov = cell->getDomain().getValues()[0];
+                                bool ok = true;
+                                for (Variable* nn : neighborCache[cell])
+                                {
+                                    if (nn->isAssigned() && nn->getAssignment() == ov)
+                                    { ok = false; break; }
+                                }
+                                if (!ok) return false;
+                                trail->push(cell);
+                                cell->assignValue(ov);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+ 
+            // ============================================
+            // 2c: Naked Pairs
+            // Two cells with identical 2-value domain ->
+            // remove those values from all other cells
+            // ============================================
+            vector<Variable*> pairCandidates;
+            for (Variable* v : c.vars)
+            {
+                if (!v->isAssigned() && v->getDomain().size() == 2)
+                    pairCandidates.push_back(v);
+            }
+ 
+            for (int i = 0; i < (int)pairCandidates.size(); i++)
+            {
+                for (int j = i + 1; j < (int)pairCandidates.size(); j++)
+                {
+                    vector<int> d1 = pairCandidates[i]->getDomain().getValues();
+                    vector<int> d2 = pairCandidates[j]->getDomain().getValues();
+ 
+                    if (d1.size() == 2 && d2.size() == 2 &&
+                        ((d1[0] == d2[0] && d1[1] == d2[1]) ||
+                         (d1[0] == d2[1] && d1[1] == d2[0])))
+                    {
+                        int val1 = d1[0];
+                        int val2 = d1[1];
+ 
+                        for (Variable* v : c.vars)
+                        {
+                            if (v == pairCandidates[i] || v == pairCandidates[j]) continue;
+                            if (v->isAssigned()) continue;
+ 
+                            Domain D = v->getDomain();
+                            bool pushed = false;
+ 
+                            if (D.contains(val1))
+                            {
+                                trail->push(v); pushed = true;
+                                v->removeValueFromDomain(val1);
+                                changed = true;
+                            }
+                            if (D.contains(val2))
+                            {
+                                if (!pushed) trail->push(v);
+                                v->removeValueFromDomain(val2);
+                                changed = true;
+                            }
+ 
+                            if (v->getDomain().size() == 0) return false;
+ 
+                            if (v->getDomain().size() == 1 && !v->isAssigned())
+                            {
+                                int ov = v->getDomain().getValues()[0];
+                                bool ok = true;
+                                for (Variable* nn : neighborCache[v])
+                                {
+                                    if (nn->isAssigned() && nn->getAssignment() == ov)
+                                    { ok = false; break; }
+                                }
+                                if (!ok) return false;
+                                trail->push(v);
+                                v->assignValue(ov);
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+ 
+            // ============================================
+            // 2d: Naked Triples
+            // Three cells whose combined domain is exactly 
+            // 3 values -> remove those values from all 
+            // other cells in constraint
+            // ============================================
+            vector<Variable*> triCandidates;
+            for (Variable* v : c.vars)
+            {
+                if (!v->isAssigned())
+                {
+                    int ds = v->getDomain().size();
+                    if (ds == 2 || ds == 3)
+                        triCandidates.push_back(v);
+                }
+            }
+ 
+            for (int i = 0; i < (int)triCandidates.size(); i++)
+            {
+                for (int j = i + 1; j < (int)triCandidates.size(); j++)
+                {
+                    for (int k = j + 1; k < (int)triCandidates.size(); k++)
+                    {
+                        // Union the domains of all three
+                        unordered_set<int> unionDomain;
+                        for (int val : triCandidates[i]->getDomain().getValues())
+                            unionDomain.insert(val);
+                        for (int val : triCandidates[j]->getDomain().getValues())
+                            unionDomain.insert(val);
+                        for (int val : triCandidates[k]->getDomain().getValues())
+                            unionDomain.insert(val);
+ 
+                        // If union has exactly 3 values, we found a naked triple
+                        if (unionDomain.size() == 3)
+                        {
+                            // Remove these 3 values from all OTHER cells
+                            for (Variable* v : c.vars)
+                            {
+                                if (v == triCandidates[i] || v == triCandidates[j] || v == triCandidates[k])
+                                    continue;
+                                if (v->isAssigned()) continue;
+ 
+                                Domain D = v->getDomain();
+                                bool pushed = false;
+ 
+                                for (int uv : unionDomain)
+                                {
+                                    if (D.contains(uv))
+                                    {
+                                        if (!pushed)
+                                        {
+                                            trail->push(v);
+                                            pushed = true;
+                                        }
+                                        v->removeValueFromDomain(uv);
+                                        changed = true;
+                                    }
+                                }
+ 
+                                if (v->getDomain().size() == 0) return false;
+ 
+                                if (v->getDomain().size() == 1 && !v->isAssigned())
+                                {
+                                    int ov = v->getDomain().getValues()[0];
+                                    bool ok = true;
+                                    for (Variable* nn : neighborCache[v])
+                                    {
+                                        if (nn->isAssigned() && nn->getAssignment() == ov)
+                                        { ok = false; break; }
+                                    }
+                                    if (!ok) return false;
+                                    trail->push(v);
+                                    v->assignValue(ov);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+ 
+        } // end for each constraint
+    } // end while changed
+    return network.isConsistent();
 }
 
 // =====================================================================
@@ -635,7 +1044,64 @@ vector<Variable*> BTSolver::MRVwithTieBreaker ( void )
  */
 Variable* BTSolver::getTournVar ( void )
 {
-	return nullptr;
+	Variable* best = nullptr;
+    int bestDomainSize = INT_MAX;
+    int bestMAD = INT_MAX;
+    int bestDegree = -1;
+ 
+    for (Variable* v : network.getVariables())
+    {
+        if (v->isAssigned()) continue;
+ 
+        int domainSize = v->getDomain().size();
+ 
+        // Quick skip: can't be better than current best on primary criterion
+        if (domainSize > bestDomainSize) continue;
+ 
+        int madScore = 0;
+        int degree = 0;
+        for (Variable* neighbor : neighborCache[v])
+        {
+            if (!neighbor->isAssigned())
+            {
+                madScore += neighbor->getDomain().size();
+                degree++;
+            }
+        }
+ 
+        bool isBetter = false;
+ 
+        if (domainSize < bestDomainSize)
+        {
+            isBetter = true;
+        }
+        else if (domainSize == bestDomainSize)
+        {
+            // Tie-break 1: smaller MAD (more constrained neighborhood)
+            if (madScore < bestMAD)
+            {
+                isBetter = true;
+            }
+            else if (madScore == bestMAD)
+            {
+                // Tie-break 2: higher degree (more unassigned neighbors)
+                if (degree > bestDegree)
+                {
+                    isBetter = true;
+                }
+            }
+        }
+ 
+        if (isBetter)
+        {
+            best = v;
+            bestDomainSize = domainSize;
+            bestMAD = madScore;
+            bestDegree = degree;
+        }
+    }
+ 
+    return best;
 }
 
 // =====================================================================
@@ -687,7 +1153,70 @@ vector<int> BTSolver::getValuesLCVOrder ( Variable* v )
  */
 vector<int> BTSolver::getTournVal ( Variable* v )
 {
-	return vector<int>();
+	vector<int> values = v->getDomain().getValues();
+ 
+    // Fast path: if only one value, no sorting needed
+    if (values.size() <= 1)
+        return values;
+ 
+    vector<Variable*>& neighbors = neighborCache[v];
+ 
+    vector<pair<int, int>> valueScores; // (score, value)
+    valueScores.reserve(values.size());
+ 
+    for (int val : values)
+    {
+        int score = 0;
+        bool causesWipeout = false;
+ 
+        for (Variable* neighbor : neighbors)
+        {
+            if (neighbor->isAssigned()) continue;
+ 
+            Domain D = neighbor->getDomain();
+            if (D.contains(val))
+            {
+                score++;
+ 
+                // Wipeout: this would empty a neighbor's domain
+                if (D.size() == 1)
+                {
+                    causesWipeout = true;
+                    break;
+                }
+ 
+                // Lookahead: if removing val leaves neighbor with 1 value,
+                // check if that remaining value conflicts with ITS neighbors
+                if (D.size() == 2)
+                {
+                    vector<int> nVals = D.getValues();
+                    int otherVal = (nVals[0] == val) ? nVals[1] : nVals[0];
+ 
+                    for (Variable* nn : neighborCache[neighbor])
+                    {
+                        if (nn != v && nn->isAssigned() && nn->getAssignment() == otherVal)
+                        {
+                            score += 100; // heavy penalty: forced conflict
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+ 
+        if (causesWipeout)
+            valueScores.push_back(make_pair(10000, val));
+        else
+            valueScores.push_back(make_pair(score, val));
+    }
+ 
+    sort(valueScores.begin(), valueScores.end());
+ 
+    vector<int> result;
+    result.reserve(valueScores.size());
+    for (auto& p : valueScores)
+        result.push_back(p.second);
+    return result;
 }
 
 // =====================================================================
