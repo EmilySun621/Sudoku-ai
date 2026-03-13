@@ -63,7 +63,7 @@ bool BTSolver::arcConsistency ( void )
         {
             if(LV[j]->isAssigned())
             {
-                vector<Variable*> Neighbors = network.getNeighborsOfVariable(LV[j]);
+                vector<Variable*>& Neighbors = neighborCache[LV[j]];
                 int assignedValue = LV[j]->getAssignment();
                 for (int k = 0; k < Neighbors.size(); ++k)
                 {
@@ -310,13 +310,12 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
         }
     }
  
-    // ---- Part 2: Hidden Singles + Naked Pairs (loop until fixpoint) ----
+    // ---- Part 2: Hidden Singles + Hidden Pairs + Naked Pairs (loop until fixpoint) ----
+    vector<Constraint> allConstraints = network.getConstraints();
     bool changed = true;
     while (changed)
     {
         changed = false;
-        vector<Constraint> allConstraints = network.getConstraints();
- 
         for (Constraint& c : allConstraints)
         {
             // ============================================
@@ -421,9 +420,66 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
             }
  
             // ============================================
-            // 2b: Naked Pairs
+            // 2b: Hidden Pairs
             // ============================================
-            // Find all unassigned variables in this constraint with domain size 2
+            unordered_map<int, vector<Variable*>> vtc;
+            for (Variable* v : c.vars)
+            {
+                if (!v->isAssigned())
+                {
+                    vector<int> vals = v->getDomain().getValues();
+                    for (int val : vals)
+                        vtc[val].push_back(v);
+                }
+            }
+            vector<int> twoPlaceVals;
+            for (auto& e : vtc)
+                if (!assignedVals.count(e.first) && e.second.size() == 2)
+                    twoPlaceVals.push_back(e.first);
+
+            for (size_t i = 0; i < twoPlaceVals.size(); i++)
+            {
+                for (size_t j = i + 1; j < twoPlaceVals.size(); j++)
+                {
+                    int v1 = twoPlaceVals[i], v2 = twoPlaceVals[j];
+                    vector<Variable*>& c1 = vtc[v1], & c2 = vtc[v2];
+                    if (c1.size() != 2 || c2.size() != 2) continue;
+                    bool sameCells = (c1[0] == c2[0] && c1[1] == c2[1]) || (c1[0] == c2[1] && c1[1] == c2[0]);
+                    if (!sameCells) continue;
+
+                    Variable* A = c1[0], * B = c1[1];
+                    for (Variable* cell : {A, B})
+                    {
+                        if (cell->isAssigned()) continue;
+                        vector<int> dom = cell->getDomain().getValues();
+                        bool pushed = false;
+                        for (int dv : dom)
+                            if (dv != v1 && dv != v2)
+                            {
+                                if (!pushed) { trail->push(cell); pushed = true; }
+                                cell->removeValueFromDomain(dv);
+                                changed = true;
+                            }
+                        if (cell->getDomain().size() == 0) return make_pair(assignedVariables, false);
+                        if (cell->getDomain().size() == 1 && !cell->isAssigned())
+                        {
+                            int ov = cell->getDomain().getValues()[0];
+                            bool ok = true;
+                            for (Variable* nn : neighborCache[cell])
+                                if (nn->isAssigned() && nn->getAssignment() == ov) { ok = false; break; }
+                            if (!ok) return make_pair(assignedVariables, false);
+                            trail->push(cell);
+                            cell->assignValue(ov);
+                            assignedVariables[cell] = ov;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            // ============================================
+            // 2c: Naked Pairs
+            // ============================================
             vector<Variable*> pairCandidates;
             for (Variable* v : c.vars)
             {
@@ -431,7 +487,7 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                     pairCandidates.push_back(v);
             }
  
-            // Check each pair of candidates for matching domains
+            for (int i = 0; i < (int)pairCandidates.size(); i++)
             for (int i = 0; i < (int)pairCandidates.size(); i++)
             {
                 for (int j = i + 1; j < (int)pairCandidates.size(); j++)
@@ -958,16 +1014,22 @@ Variable* BTSolver::getMRV ( void )
 {
     Variable* best = nullptr;
     int smallestDomainSize = INT_MAX;
+    int bestDegree = -1;
 
     for (Variable* v : network.getVariables())
     {
         if (!v->isAssigned())
         {
             int domainSize = v->getDomain().size();
+            int degree = 0;
+            for (Variable* n : neighborCache[v])
+                if (!n->isAssigned()) degree++;
 
-            if (domainSize < smallestDomainSize)
+            if (domainSize < smallestDomainSize ||
+                (domainSize == smallestDomainSize && degree > bestDegree))
             {
                 smallestDomainSize = domainSize;
+                bestDegree = degree;
                 best = v;
             }
         }
