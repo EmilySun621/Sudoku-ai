@@ -477,7 +477,7 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                             if (v->getDomain().size() == 0)
                                 return make_pair(assignedVariables, false);
  
-                            // If domain reduced to 1, assign it
+                            // If domain reduced to 1, assign and propagate
                             if (v->getDomain().size() == 1 && !v->isAssigned())
                             {
                                 int onlyVal = v->getDomain().getValues()[0];
@@ -492,11 +492,29 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                                 }
                                 if (!ok)
                                     return make_pair(assignedVariables, false);
- 
+
                                 trail->push(v);
                                 v->assignValue(onlyVal);
                                 assignedVariables[v] = onlyVal;
                                 changed = true;
+
+                                // Propagate: remove onlyVal from neighbors
+                                for (Variable* neighbor : neighborCache[v])
+                                {
+                                    if (!neighbor->isAssigned())
+                                    {
+                                        Domain D = neighbor->getDomain();
+                                        if (D.contains(onlyVal))
+                                        {
+                                            if (D.size() == 1)
+                                                return make_pair(assignedVariables, false);
+                                            trail->push(neighbor);
+                                            neighbor->removeValueFromDomain(onlyVal);
+                                            if (neighbor->getDomain().size() == 0)
+                                                return make_pair(assignedVariables, false);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -653,7 +671,9 @@ vector<int> BTSolver::getValuesLCVOrder ( Variable* v )
                 elimCount[val]++;
 
     sort(values.begin(), values.end(), [&](int a, int b) {
-        return elimCount[a] < elimCount[b];
+        int ea = elimCount[a];
+        int eb = elimCount[b];
+        return ea < eb || (ea == eb && a < b);
     });
 
     return values;
@@ -755,7 +775,10 @@ Variable* BTSolver::selectNextVariable ( void )
 		return getMRV();
 
 	if ( varHeuristics == "MRVwithTieBreaker" )
-		return MRVwithTieBreaker()[0];
+	{
+		vector<Variable*> cands = MRVwithTieBreaker();
+		return cands.empty() ? nullptr : cands[0];
+	}
 
 	if ( varHeuristics == "tournVar" )
 		return getTournVar();
