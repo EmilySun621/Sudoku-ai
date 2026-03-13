@@ -42,10 +42,9 @@ void BTSolver::buildNeighborCache()
 // Basic consistency check, no propagation done
 bool BTSolver::assignmentsCheck ( void )
 {
-	for ( Constraint c : network.getConstraints() )
+	for (Constraint c : network.getConstraints() )
 		if ( ! c.isConsistent() )
 			return false;
-
 	return true;
 }
 
@@ -85,8 +84,8 @@ bool BTSolver::arcConsistency ( void )
     {
         for (int i = 0; i < toAssign.size(); ++i)
         {
-            Domain D = toAssign[i]->getDomain();
-            vector<int> assign = D.getValues();
+            const Domain& D = toAssign[i]->getDomain();
+            const vector<int>& assign = D.getValues();
             trail->push(toAssign[i]);
             toAssign[i]->assignValue(assign[0]);
         }
@@ -225,9 +224,8 @@ pair<unordered_map<Variable*,Domain>,bool> BTSolver::forwardChecking ( void )
  */
 pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
 {
-        unordered_map<Variable*, int> assignedVariables;
- 
-    // ---- Part 1: Forward Checking (eliminate assigned values from neighbors) ----
+    unordered_map<Variable*, int> assignedVariables;
+    // ---- Part 1: Forward Checking ----
     queue<Variable*> propagationQueue;
     unordered_set<Variable*> inQueue;
     unordered_set<Variable*> processed;
@@ -264,7 +262,7 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
         {
             if (!neighbor->isAssigned())
             {
-                Domain D = neighbor->getDomain();
+                const Domain& D = neighbor->getDomain();
                 if (D.contains(assignedValue))
                 {
                     if (D.size() == 1)
@@ -276,7 +274,6 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                     if (neighbor->getDomain().size() == 0)
                         return make_pair(assignedVariables, false);
  
-                    // Naked single: domain reduced to 1, assign it
                     if (neighbor->getDomain().size() == 1)
                     {
                         int onlyValue = neighbor->getDomain().getValues()[0];
@@ -310,13 +307,13 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
         }
     }
  
-    // ---- Part 2: Hidden Singles + Hidden Pairs + Naked Pairs (loop until fixpoint) ----
-    vector<Constraint> allConstraints = network.getConstraints();
+    // ---- Part 2: Hidden Singles + Hidden Pairs + Naked Pairs ----
+    const vector<Constraint>& allConstraints = network.getConstraints();
     bool changed = true;
     while (changed)
     {
         changed = false;
-        for (Constraint& c : allConstraints)
+        for (const Constraint& c : allConstraints)
         {
             // ============================================
             // 2a: Hidden Singles
@@ -330,7 +327,7 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                     assignedVals.insert(v->getAssignment());
                 else
                 {
-                    vector<int> vals = v->getDomain().getValues();
+                    const vector<int>& vals = v->getDomain().getValues();
                     for (int val : vals)
                         valueToCandidates[val].push_back(v);
                 }
@@ -344,17 +341,14 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                 if (assignedVals.count(val))
                     continue;
  
-                // No candidate can hold this value -> inconsistency
                 if (candidates.size() == 0)
                     return make_pair(assignedVariables, false);
  
-                // Hidden single: only one place for this value
                 if (candidates.size() == 1)
                 {
                     Variable* target = candidates[0];
                     if (!target->isAssigned())
                     {
-                        // Verify no conflict with neighbors
                         bool canAssign = true;
                         vector<Variable*>& neighborsOfTarget = neighborCache[target];
                         for (Variable* nn : neighborsOfTarget)
@@ -374,13 +368,12 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                         assignedVariables[target] = val;
                         changed = true;
  
-                        // Propagate: remove val from all neighbors' domains
                         vector<Variable*>& neighbors = neighborCache[target];
                         for (Variable* neighbor : neighbors)
                         {
                             if (!neighbor->isAssigned())
                             {
-                                Domain D = neighbor->getDomain();
+                                const Domain& D = neighbor->getDomain();
                                 if (D.contains(val))
                                 {
                                     if (D.size() == 1)
@@ -427,46 +420,54 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
             {
                 if (!v->isAssigned())
                 {
-                    vector<int> vals = v->getDomain().getValues();
+                    const vector<int>& vals = v->getDomain().getValues();
                     for (int val : vals)
                         vtc[val].push_back(v);
                 }
             }
+ 
             vector<int> twoPlaceVals;
             for (auto& e : vtc)
                 if (!assignedVals.count(e.first) && e.second.size() == 2)
                     twoPlaceVals.push_back(e.first);
-
+ 
             for (size_t i = 0; i < twoPlaceVals.size(); i++)
             {
                 for (size_t j = i + 1; j < twoPlaceVals.size(); j++)
                 {
                     int v1 = twoPlaceVals[i], v2 = twoPlaceVals[j];
-                    vector<Variable*>& c1 = vtc[v1], & c2 = vtc[v2];
+                    vector<Variable*>& c1 = vtc[v1];
+                    vector<Variable*>& c2 = vtc[v2];
                     if (c1.size() != 2 || c2.size() != 2) continue;
-                    bool sameCells = (c1[0] == c2[0] && c1[1] == c2[1]) || (c1[0] == c2[1] && c1[1] == c2[0]);
+                    bool sameCells = (c1[0] == c2[0] && c1[1] == c2[1]) ||
+                                     (c1[0] == c2[1] && c1[1] == c2[0]);
                     if (!sameCells) continue;
-
-                    Variable* A = c1[0], * B = c1[1];
+ 
+                    Variable* A = c1[0];
+                    Variable* B = c1[1];
                     for (Variable* cell : {A, B})
                     {
                         if (cell->isAssigned()) continue;
-                        vector<int> dom = cell->getDomain().getValues();
+                        const vector<int>& dom = cell->getDomain().getValues();
                         bool pushed = false;
                         for (int dv : dom)
+                        {
                             if (dv != v1 && dv != v2)
                             {
                                 if (!pushed) { trail->push(cell); pushed = true; }
                                 cell->removeValueFromDomain(dv);
                                 changed = true;
                             }
-                        if (cell->getDomain().size() == 0) return make_pair(assignedVariables, false);
+                        }
+                        if (cell->getDomain().size() == 0)
+                            return make_pair(assignedVariables, false);
                         if (cell->getDomain().size() == 1 && !cell->isAssigned())
                         {
                             int ov = cell->getDomain().getValues()[0];
                             bool ok = true;
                             for (Variable* nn : neighborCache[cell])
-                                if (nn->isAssigned() && nn->getAssignment() == ov) { ok = false; break; }
+                                if (nn->isAssigned() && nn->getAssignment() == ov)
+                                { ok = false; break; }
                             if (!ok) return make_pair(assignedVariables, false);
                             trail->push(cell);
                             cell->assignValue(ov);
@@ -476,7 +477,7 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                     }
                 }
             }
-
+ 
             // ============================================
             // 2c: Naked Pairs
             // ============================================
@@ -488,14 +489,12 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
             }
  
             for (int i = 0; i < (int)pairCandidates.size(); i++)
-            for (int i = 0; i < (int)pairCandidates.size(); i++)
             {
                 for (int j = i + 1; j < (int)pairCandidates.size(); j++)
                 {
-                    vector<int> d1 = pairCandidates[i]->getDomain().getValues();
-                    vector<int> d2 = pairCandidates[j]->getDomain().getValues();
+                    const vector<int>& d1 = pairCandidates[i]->getDomain().getValues();
+                    const vector<int>& d2 = pairCandidates[j]->getDomain().getValues();
  
-                    // Check if domains are identical (both size 2 with same values)
                     if (d1.size() == 2 && d2.size() == 2 &&
                         ((d1[0] == d2[0] && d1[1] == d2[1]) ||
                          (d1[0] == d2[1] && d1[1] == d2[0])))
@@ -503,7 +502,6 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                         int val1 = d1[0];
                         int val2 = d1[1];
  
-                        // Remove val1 and val2 from all OTHER unassigned vars in this constraint
                         for (Variable* v : c.vars)
                         {
                             if (v == pairCandidates[i] || v == pairCandidates[j])
@@ -511,29 +509,29 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                             if (v->isAssigned())
                                 continue;
  
-                            Domain D = v->getDomain();
-                            bool pushed = false;
+                            const Domain& D = v->getDomain();
+                            bool hasVal1 = D.contains(val1);
+                            bool hasVal2 = D.contains(val2);
  
-                            if (D.contains(val1))
+                            if (!hasVal1 && !hasVal2)
+                                continue;
+ 
+                            trail->push(v);
+ 
+                            if (hasVal1)
                             {
-                                trail->push(v);
-                                pushed = true;
                                 v->removeValueFromDomain(val1);
                                 changed = true;
                             }
-                            if (D.contains(val2))
+                            if (hasVal2)
                             {
-                                if (!pushed)
-                                    trail->push(v);
                                 v->removeValueFromDomain(val2);
                                 changed = true;
                             }
  
-                            // Check for empty domain
                             if (v->getDomain().size() == 0)
                                 return make_pair(assignedVariables, false);
  
-                            // If domain reduced to 1, assign and propagate
                             if (v->getDomain().size() == 1 && !v->isAssigned())
                             {
                                 int onlyVal = v->getDomain().getValues()[0];
@@ -548,21 +546,20 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
                                 }
                                 if (!ok)
                                     return make_pair(assignedVariables, false);
-
+ 
                                 trail->push(v);
                                 v->assignValue(onlyVal);
                                 assignedVariables[v] = onlyVal;
                                 changed = true;
-
-                                // Propagate: remove onlyVal from neighbors
+ 
                                 for (Variable* neighbor : neighborCache[v])
                                 {
                                     if (!neighbor->isAssigned())
                                     {
-                                        Domain D = neighbor->getDomain();
-                                        if (D.contains(onlyVal))
+                                        const Domain& ND = neighbor->getDomain();
+                                        if (ND.contains(onlyVal))
                                         {
-                                            if (D.size() == 1)
+                                            if (ND.size() == 1)
                                                 return make_pair(assignedVariables, false);
                                             trail->push(neighbor);
                                             neighbor->removeValueFromDomain(onlyVal);
@@ -589,10 +586,8 @@ pair<unordered_map<Variable*,int>,bool> BTSolver::norvigCheck ( void )
  */
 bool BTSolver::getTournCC ( void )
 {
-	    // Determine board size from p*q
     int boardSize = sudokuGrid.get_p() * sudokuGrid.get_q();
- 
-    // --- Step 1: Forward Checking with cascade (always do this) ---
+    // --- Step 1: Forward Checking with cascade ---
     queue<Variable*> propagationQueue;
     unordered_set<Variable*> inQueue;
     unordered_set<Variable*> processed;
@@ -629,7 +624,7 @@ bool BTSolver::getTournCC ( void )
         {
             if (!neighbor->isAssigned())
             {
-                Domain D = neighbor->getDomain();
+                const Domain& D = neighbor->getDomain();
                 if (D.contains(assignedValue))
                 {
                     if (D.size() == 1)
@@ -666,13 +661,13 @@ bool BTSolver::getTournCC ( void )
     }
  
     // --- Step 2: Hidden Singles + Naked Pairs (+ advanced for large boards) ---
+    const vector<Constraint>& allConstraints = network.getConstraints();
     bool changed = true;
     while (changed)
     {
         changed = false;
-        vector<Constraint> allConstraints = network.getConstraints();
  
-        for (Constraint& c : allConstraints)
+        for (const Constraint& c : allConstraints)
         {
             // Collect unassigned vars and assigned values
             vector<Variable*> unassigned;
@@ -693,7 +688,7 @@ bool BTSolver::getTournCC ( void )
             unordered_map<int, vector<Variable*>> valueToCandidates;
             for (Variable* v : unassigned)
             {
-                vector<int> vals = v->getDomain().getValues();
+                const vector<int>& vals = v->getDomain().getValues();
                 for (int val : vals)
                     valueToCandidates[val].push_back(v);
             }
@@ -729,7 +724,7 @@ bool BTSolver::getTournCC ( void )
                         {
                             if (!neighbor->isAssigned())
                             {
-                                Domain D = neighbor->getDomain();
+                                const Domain& D = neighbor->getDomain();
                                 if (D.contains(val))
                                 {
                                     if (D.size() == 1) return false;
@@ -759,7 +754,7 @@ bool BTSolver::getTournCC ( void )
             }
  
             // ============================================
-            // 2b: Naked Pairs (always do this — cheap and effective)
+            // 2b: Naked Pairs
             // ============================================
             vector<Variable*> pairCandidates;
             for (Variable* v : c.vars)
@@ -772,8 +767,8 @@ bool BTSolver::getTournCC ( void )
             {
                 for (int j = i + 1; j < (int)pairCandidates.size(); j++)
                 {
-                    vector<int> d1 = pairCandidates[i]->getDomain().getValues();
-                    vector<int> d2 = pairCandidates[j]->getDomain().getValues();
+                    const vector<int>& d1 = pairCandidates[i]->getDomain().getValues();
+                    const vector<int>& d2 = pairCandidates[j]->getDomain().getValues();
  
                     if (d1.size() == 2 && d2.size() == 2 &&
                         ((d1[0] == d2[0] && d1[1] == d2[1]) ||
@@ -787,18 +782,21 @@ bool BTSolver::getTournCC ( void )
                             if (v == pairCandidates[i] || v == pairCandidates[j]) continue;
                             if (v->isAssigned()) continue;
  
-                            Domain D = v->getDomain();
-                            bool pushed = false;
+                            const Domain& D = v->getDomain();
+                            bool hasVal1 = D.contains(val1);
+                            bool hasVal2 = D.contains(val2);
  
-                            if (D.contains(val1))
+                            if (!hasVal1 && !hasVal2) continue;
+ 
+                            trail->push(v);
+ 
+                            if (hasVal1)
                             {
-                                trail->push(v); pushed = true;
                                 v->removeValueFromDomain(val1);
                                 changed = true;
                             }
-                            if (D.contains(val2))
+                            if (hasVal2)
                             {
-                                if (!pushed) trail->push(v);
                                 v->removeValueFromDomain(val2);
                                 changed = true;
                             }
@@ -825,9 +823,7 @@ bool BTSolver::getTournCC ( void )
             }
  
             // ============================================
-            // 2c: Hidden Pairs + Naked Triples 
-            //     ONLY for large boards (16x16, 25x25)
-            //     On 9x9 the overhead isn't worth it
+            // 2c: Hidden Pairs + Naked Triples (large boards only)
             // ============================================
             if (boardSize > 9)
             {
@@ -837,7 +833,7 @@ bool BTSolver::getTournCC ( void )
                 {
                     if (!v->isAssigned())
                     {
-                        vector<int> vals = v->getDomain().getValues();
+                        const vector<int>& vals = v->getDomain().getValues();
                         for (int val : vals)
                             vtc2[val].push_back(v);
                     }
@@ -871,7 +867,7 @@ bool BTSolver::getTournCC ( void )
                             {
                                 if (cell->isAssigned()) continue;
  
-                                vector<int> domVals = cell->getDomain().getValues();
+                                const vector<int>& domVals = cell->getDomain().getValues();
                                 bool pushed = false;
  
                                 for (int dv : domVals)
@@ -944,7 +940,7 @@ bool BTSolver::getTournCC ( void )
                                         continue;
                                     if (v->isAssigned()) continue;
  
-                                    Domain D = v->getDomain();
+                                    const Domain& D = v->getDomain();
                                     bool pushed = false;
  
                                     for (int uv : unionDomain)
@@ -1224,7 +1220,7 @@ vector<int> BTSolver::getTournVal ( Variable* v )
         {
             if (neighbor->isAssigned()) continue;
  
-            Domain D = neighbor->getDomain();
+            const Domain& D = neighbor->getDomain();
             if (D.contains(val))
             {
                 score++;
@@ -1240,7 +1236,7 @@ vector<int> BTSolver::getTournVal ( Variable* v )
                 // check if that remaining value conflicts with ITS neighbors
                 if (D.size() == 2)
                 {
-                    vector<int> nVals = D.getValues();
+                    const vector<int>& nVals = D.getValues();
                     int otherVal = (nVals[0] == val) ? nVals[1] : nVals[0];
  
                     for (Variable* nn : neighborCache[neighbor])
